@@ -664,6 +664,6 @@ def reset():
 # ─── Start ────────────────────────────────────────────
 if __name__ == "__main__":
     port = 8080
-    threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
-    print(f"\nUygulama başlatıldı -> http://127.0.0.1:{port}\n")
-    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+    threading.Timer(1.5, lambda: webbrowser.open(f"http://0.0.0.0:{port}")).start()
+    print(f"\nUygulama başlatıldı -> http://0.0.0.0:{port}\n")
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

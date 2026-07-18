@@ -4,6 +4,8 @@ A Flask web application that performs **RFM segmentation**, **churn risk predict
 
 > 🔁 Multilingual UI (Turkish / English) · 📊 Auto-generated PDF report · 🤖 Pre-trained ensemble model · 🎲 No upload required — synthetic data is generated on the fly
 
+🔗 **Live demo:** [https://donor-analytics.emrebayir.com](https://donor-analytics.emrebayir.com)
+
 ---
 
 ## Table of Contents
@@ -13,6 +15,8 @@ A Flask web application that performs **RFM segmentation**, **churn risk predict
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
+  - [Local Setup](#local-setup)
+  - [Docker Setup](#docker-setup)
 - [Usage](#usage)
 - [Churn Prediction Model](#churn-prediction-model)
 - [RFM Segmentation](#rfm-segmentation)
@@ -51,14 +55,14 @@ The merged `final_data` is the single source for both the PDF report and the CSV
 
 ## Tech Stack
 
-| Area | Libraries |
-|---|---|
-| Web framework | Flask |
-| Data | pandas, numpy, pyarrow |
-| ML models | LightGBM, XGBoost, CatBoost, scikit-learn |
-| Hyperparameter tuning | Optuna |
-| Reporting | fpdf2, matplotlib, seaborn, geopandas |
-| Fonts | DejaVu (bundled in `utils/fonts/` for Turkish characters) |
+| Area                  | Libraries                                                 |
+| --------------------- | --------------------------------------------------------- |
+| Web framework         | Flask                                                     |
+| Data                  | pandas, numpy, pyarrow                                    |
+| ML models             | LightGBM, XGBoost, CatBoost, scikit-learn                 |
+| Hyperparameter tuning | Optuna                                                    |
+| Reporting             | fpdf2, matplotlib, seaborn, geopandas                     |
+| Fonts                 | DejaVu (bundled in `utils/fonts/` for Turkish characters) |
 
 Full versioned list in `requirements.txt`.
 
@@ -70,8 +74,7 @@ Full versioned list in `requirements.txt`.
 analiz_portfolio/
 ├── app.py                          # Flask app + UI + pipeline orchestration
 ├── requirements.txt
-├── bagislar.csv                    # Sample donations CSV (2.5M rows, gitignored in prod)
-├── bagiscilar.csv                  # Sample donors CSV (25K rows, gitignored in prod)
+├── Dockerfile                      # Container build definition
 ├── notebooks/
 │   └── train_model.ipynb           # Notebook used to train the ensemble model
 └── utils/
@@ -103,15 +106,17 @@ analiz_portfolio/
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10+ (Docker image uses 3.12-slim)
 - ~2 GB free disk for `pip install` (XGBoost, CatBoost, GeoPandas are heavy)
 
-### Installation
+There are two ways to run the app: directly on your machine (**Local Setup**), or inside a container (**Docker Setup**). Pick one.
+
+### Local Setup
 
 ```bash
 # 1. Clone
-git clone https://github.com/<your-user>/analiz_portfolio.git
-cd analiz_portfolio
+git clone https://github.com/emrebayir1/donor-churn-rfm.git
+cd donor-churn-rfm
 
 # 2. Create and activate a virtual environment
 python -m venv venv
@@ -119,28 +124,83 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
-```
 
-### Run the app
-
-```bash
+# 4. Run
 python app.py
 ```
 
-The app starts on **http://127.0.0.1:8080** and your browser opens automatically after ~1.5 seconds.
+The app starts on **[http://0.0.0.0:8080](http://0.0.0.0:8080)** (Flask dev server, bound to all interfaces) and your browser opens automatically after ~1.5 seconds. Open it locally at `http://127.0.0.1:8080` or `http://localhost:8080`.
+
+### Docker Setup
+
+The container runs the app with **Gunicorn**, also bound to `0.0.0.0:8080` so it's reachable from outside the container. It's designed to sit behind a reverse proxy (e.g. Nginx) rather than being browsed to directly on port 8080.
+
+**1. `Dockerfile`** (included in the repo root):
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    gcc \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt gunicorn==23.0.0
+COPY . .
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]
+```
+
+**2. `docker-compose.yml`** (add as a service, e.g. alongside other apps on a shared network):
+
+```yaml
+  # DONOR ANALYTICS
+  donor-analytics:
+    build: ./donor-churn-rfm
+    container_name: donor-analytics
+    expose:
+      - "8080"
+    restart: unless-stopped
+    networks:
+      - <yournetwork>
+```
+
+> Note: `expose` only publishes the port to other containers on the same Docker network — not to the host. Use `ports: ["8080:8080"]` instead if you want to reach the container directly from your host without a reverse proxy.
+
+**3. Reverse proxy (Nginx)** — example config used to serve the app over HTTPS at the live domain:
+
+```nginx
+# ─── donor-analytics.<yourdomain> ───
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name donor-analytics.<yourdomain>;
+    ssl_certificate /etc/nginx/certs/archive/<yourdomain>/fullchain1.pem;
+    ssl_certificate_key /etc/nginx/certs/archive/<yourdomain>/privkey1.pem;
+    location / {
+        proxy_pass http://donor-analytics:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**4. Build and run:**
+
+```bash
+docker compose up -d --build donor-analytics
+```
 
 ---
 
 ## Usage
 
 1. Open the app in your browser.
-2. (Optional) Toggle **Demo Data** parameters:
-   - **Donor count** (10–10,000)
-   - **Donation count** (1,000–100,000)
-   - **Reuse the same data** checkbox + **seed** number for reproducibility
-3. (Optional) Set **Parameters**:
-   - **Cutoff date** — reference end date for churn analysis (empty = last day of the month preceding the latest donation)
-   - **PDF output filename**
+2. (Optional) Toggle **Demo Data** parameters:- **Donor count** (10–10,000)- **Donation count** (1,000–100,000)- **Reuse the same data** checkbox + **seed** number for reproducibility
+3. (Optional) Set **Parameters**:- **Cutoff date** — reference end date for churn analysis (empty = last day of the month preceding the latest donation)- **PDF output filename**
 4. Click **Start Analysis**.
 5. Watch the live step-by-step progress log.
 6. When finished, download the **PDF report** and/or **CSV dataset**.
@@ -151,13 +211,7 @@ Switch the UI language with the **TR / EN** links in the top-right corner. The s
 
 ## Churn Prediction Model
 
-The churn model is a **weighted ensemble** of three gradient-boosted classifiers:
-
-| Model | Weight |
-|---|---|
-| XGBoost | 0.846 |
-| LightGBM | 0.094 |
-| CatBoost | 0.060 |
+The churn model is a **weighted ensemble** of three gradient-boosted classifiers.
 
 ### Methodology
 
@@ -194,19 +248,20 @@ Scoring follows the classic RFM approach:
 
 **Behavioral segments** (from R + F):
 
-| Segment (TR) | Segment (EN) | R | F |
-|---|---|---|---|
-| Şampiyonlar | Champions | 5 | 2 |
-| Sadık Bağışçılar | Loyal Donors | 4 | 2 |
-| Potansiyel Sadıklar | Potential Loyalists | 3 | 2 |
-| Yeni Bağışçılar | New Donors | 4–5 | 1 |
-| İlgi Gerektiren | Need Attention | 3 | 1 |
-| Uykuda | Dormant | 2 | 1–2 |
-| Kayıp Riskli | At Risk | 1 | 1–2 |
+| Segment (TR)        | Segment (EN)        | R   | F   |
+| ------------------- | ------------------- | --- | --- |
+| Şampiyonlar         | Champions           | 5   | 2   |
+| Sadık Bağışçılar    | Loyal Donors        | 4   | 2   |
+| Potansiyel Sadıklar | Potential Loyalists | 3   | 2   |
+| Yeni Bağışçılar     | New Donors          | 4–5 | 1   |
+| İlgi Gerektiren     | Need Attention      | 3   | 1   |
+| Uykuda              | Dormant             | 2   | 1–2 |
+| Kayıp Riskli        | At Risk             | 1   | 1–2 |
 
 **Final segment** — combines value + behavior (e.g., `VIP Champions`, `Standard At Risk`).
 
 Two sliding windows are computed by default:
+
 - `prev`: `[ref-27m, ref-3m]`
 - `next`: `[ref-24m, ref]`
 
@@ -235,12 +290,20 @@ All charts are generated via `matplotlib`/`seaborn`/`geopandas`, written to temp
 ## Notes & Disclaimers
 
 - Demo data is **fully synthetic** and contains no real personal data.
-- The supporting CSVs (`bagislar.csv`, `bagiscilar.csv`) are sample outputs of the generator; their format is documented by `demo_data_generator.py`.
+
 - The bundled churn models were trained on synthetic data — they are intended for demonstration of the pipeline, not for production decisions on real donors.
+
 - Turbine outputs (PDFs and CSVs) are excluded from git via `.gitignore`.
 
 ---
 
 ## License
 
-This project is shared for portfolio demonstration purposes. See the repository for license terms (none bundled by default — add a `LICENSE` file if you intend to redistribute).
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+## Citation
+
+If you use this project in your work, attribution is appreciated.
+Created by **Emre Bayır**.
