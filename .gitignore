@@ -24,3 +24,6 @@ catboost_info/
 Thumbs.db
 .vscode/
 .idea/
+
+# Environment
+.env

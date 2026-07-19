@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 import threading
 import webbrowser
+import uuid
 
 from pathlib import Path
 
@@ -15,17 +16,17 @@ from flask import (
     render_template_string, session
 )
 
+from dotenv import load_dotenv
+load_dotenv()
+
 app = Flask(__name__, static_folder="assets", static_url_path="/utils/assets")
-app.secret_key = os.urandom(24).hex()
+app.secret_key = os.environ.get("SECRET_KEY")
+print(app.secret_key)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
 
 # ─── App state ─────────────────────────────────────────
-state = {
-    "work_dir": None,
-    "pdf_path": None,
-    "csv_path": None,
-    "running": False,
-}
+# ─── App state (per-session) ──────────────────────────
+tasks = {}   # task_id -> {"work_dir":..., "pdf_path":..., "csv_path":..., "running":...}
 
 STEPS = {
     "tr": [
@@ -468,11 +469,15 @@ def set_lang(code):
     return index()
 
 
-def _read_status():
-    wd = state.get("work_dir")
+def _read_status(task):
+    empty = {"step": 0, "total": len(STEPS["tr"]), "message": "", "finished": False,
+              "error": None, "running": False}
+    if not task:
+        return empty
+    wd = task.get("work_dir")
     if not wd:
-        return {"step": 0, "total": len(STEPS["tr"]), "message": "", "finished": False,
-                "error": None, "running": state["running"]}
+        empty["running"] = task.get("running", False)
+        return empty
     p = os.path.join(wd, "status.json")
     for _ in range(5):
         if os.path.exists(p):
@@ -480,23 +485,27 @@ def _read_status():
                 txt = open(p, "r", encoding="utf-8").read().strip()
                 if txt:
                     d = json.loads(txt)
-                    d["running"] = state["running"]
+                    d["running"] = task["running"]
                     return d
             except (json.JSONDecodeError, OSError):
                 pass
         time.sleep(0.05)
-    return {"step": 0, "total": len(STEPS["tr"]), "message": "", "finished": False,
-            "error": None, "running": state["running"]}
+    empty["running"] = task.get("running", False)
+    return empty
 
 
 @app.route("/status")
 def status():
-    return jsonify(_read_status())
+    task_id = session.get("task_id")
+    task = tasks.get(task_id) if task_id else None
+    return jsonify(_read_status(task))
 
 
 @app.route("/start", methods=["POST"])
 def start():
-    if state["running"]:
+    task_id = session.get("task_id")
+    existing = tasks.get(task_id) if task_id else None
+    if existing and existing.get("running"):
         return jsonify({"ok": False, "error": "Zaten çalışıyor."})
 
     seed_enabled = request.form.get("demo_seed_enabled", "false").lower() == "true"
@@ -625,15 +634,19 @@ except Exception as e:
         json.dump({"step": 0, "total": len(STEPS["tr"]), "message": _t("loading", lang),
                    "finished": False, "error": None}, f)
 
-    state["work_dir"] = work_dir
-    state["pdf_path"] = pdf_out
-    state["csv_path"] = csv_out
-    state["running"]  = True
+    task_id = uuid.uuid4().hex
+    session["task_id"] = task_id
+    tasks[task_id] = {
+        "work_dir": work_dir,
+        "pdf_path": pdf_out,
+        "csv_path": csv_out,
+        "running": True,
+    }
 
     def run():
         subprocess.run([sys.executable, script_path],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        state["running"] = False
+        tasks[task_id]["running"] = False
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"ok": True})
@@ -641,7 +654,8 @@ except Exception as e:
 
 @app.route("/download/pdf")
 def download_pdf():
-    p = state.get("pdf_path")
+    task = tasks.get(session.get("task_id"))
+    p = task.get("pdf_path") if task else None
     if p and os.path.exists(p):
         return send_file(p, as_attachment=True, download_name=os.path.basename(p))
     return "PDF bulunamadı.", 404
@@ -649,7 +663,8 @@ def download_pdf():
 
 @app.route("/download/csv")
 def download_csv():
-    p = state.get("csv_path")
+    task = tasks.get(session.get("task_id"))
+    p = task.get("csv_path") if task else None
     if p and os.path.exists(p):
         return send_file(p, as_attachment=True, download_name=os.path.basename(p))
     return "CSV bulunamadı.", 404
@@ -657,7 +672,9 @@ def download_csv():
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    state.update({"work_dir": None, "pdf_path": None, "csv_path": None, "running": False})
+    task_id = session.pop("task_id", None)
+    if task_id:
+        tasks.pop(task_id, None)
     return jsonify({"ok": True})
 
 
